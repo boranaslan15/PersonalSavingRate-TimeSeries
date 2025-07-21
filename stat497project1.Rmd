@@ -1,0 +1,1051 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+#Introduciton(1)
+My source is; Federal Reserve Economic Data | FRED | St. Louis Fed
+from here I chose Personal Saving Rate
+
+Our aims is to analyze the Personal Saving Rate data set, using time series. 
+Personal Saving Rate(PSAVERT) is taken as the proportion of the personal income that households holds rather than spend. It is a very essential indicator that will help policymakers, investors, and businesses.
+
+
+First we will upload the necessary libraries.
+```{r}
+library(tibbletime)
+library(tidyverse)
+library(timetk)
+library(anomalize)
+library(TSA)
+library(gridExtra)
+library(lubridate)
+library(tseries)
+library(ggplot2)
+library(forecast)
+library(TSA)
+library(tseries)
+library(fUnitRoots)
+library(FinTS)
+library(pdR)
+library(gridExtra)
+library(knitr)
+library(lmtest)
+#library(caschrono)
+#install.packages("uroot")
+library(uroot)
+#install.packages("pdR")
+```
+
+
+let's take a look at the data
+```{r}
+summary(PSAVERT)
+sum(is.na(PSAVERT))
+```
+Data starts from 1959 and ends in late 2024
+There is no missing value
+
+```{r}
+psavert <- ts(PSAVERT[, 2], start = c(1959, 1), frequency = 12)
+str(psavert)
+frequency(psavert)
+class(psavert)
+```
+Class is ts(time series object)
+It is a monthly data set
+#Time series plot and interpretion(2)
+
+```{r}
+plot(psavert,main="Time Series Plot of Personal Saving Rate",col="black")
+```
+The x-axis represent the time, y-axis represent the percentage of the personal saving rate.
+In the plot there is a huge spike in 2020, which is because of the pandemic. 
+
+```{r}
+acf(psavert, main="ACF of Personal Saving Rate")
+```
+
+There is a slow linear decay in ACF so it is not stationary but let's check with the tests as well.
+```{r}
+pacf(psavert, main="PACF of Personal Saving Rate")
+```
+
+PACF drops into the band after lag 2
+
+
+Creating psavert1 with additional columns for year and month
+```{r}
+df <- data.frame(
+  Date = seq(as.Date("1959-01-01"), by = "month", length.out = length(psavert)),
+  SavingRate = as.numeric(psavert)
+)
+
+head(df)
+
+psavert1 <- df %>%
+  mutate(year = year(Date), month = month(Date))
+
+head(psavert1)
+```
+
+```{r}
+bp <- ggplot(psavert1, aes(x = factor(month), y = SavingRate, fill = factor(month))) + 
+  geom_boxplot() +
+  labs(title = "Boxplot Across Months", x = "Month", y = "Personal Saving Rate") +
+  theme_minimal()
+
+bp
+```
+As we can see, the means of the months are very similiar to each other.
+Seasonality is not observed from the box-plots.
+
+```{r}
+# Line plot using AirPassengers2 data
+ggplot(psavert1, aes(x = as.numeric(month), y = SavingRate)) + 
+  geom_line(aes(colour = factor(year))) +
+  xlab("Month") +
+  ylab("Air Passengers") +
+  labs(colour = "Year") +
+  theme_minimal()
+```
+We can see from this plots, pandemic years 2020 and 2021 differs from the rest of the years. 
+
+```{r}
+outliers <- boxplot.stats(psavert1$Value)$out
+print(outliers)  # no outliers
+```
+No outliers
+
+#Splitting the data to train and test(3)
+
+```{r}
+traindata <- window(psavert, end = c(2023,10))
+testdata <- window(psavert, start = c(2023,11))
+
+length(testdata)
+length(traindata)
+testdata
+```
+
+```{r}
+df1 <- data.frame(
+  Date = seq(as.Date("1959-01-01"), by = "month", length.out = length(traindata)),
+  SavingRate = as.numeric(traindata)
+)
+
+head(df1)
+
+traindata1 <- df1 %>%
+  mutate(year = year(Date), month = month(Date))
+
+head(traindata1)
+
+
+traindata1 <- as_tibble(traindata1)
+class(traindata1)
+
+```
+
+
+
+```{r}
+library(tidyverse)
+library(anomalize)
+traindata1 %>% anomalize::time_decompose(SavingRate, method = "stl", frequency = "auto", trend = "auto") %>% anomalize::anomalize(remainder, method = "gesd", alpha = 0.05, max_anoms = 0.2) %>% anomalize::plot_anomaly_decomposition()
+```
+
+```{r}
+traindata1 %>% 
+  anomalize::time_decompose(SavingRate) %>%
+  anomalize::anomalize(remainder) %>%
+  anomalize::time_recompose() %>%
+  filter(anomaly == 'Yes')
+```
+19 anomalies are detected. 
+
+
+```{r}
+library(anomalize)
+library(tidyverse)
+traindata1 %>% 
+  anomalize::time_decompose(SavingRate) %>%
+  anomalize::anomalize(remainder) %>%
+  anomalize::time_recompose() %>%
+  anomalize::plot_anomalies(time_recomposed = TRUE, ncol = 3, alpha_dots = 0.5)
+```
+
+
+
+```{r}
+ps_clean=tsclean(traindata)
+```
+
+```{r}
+plot(ps_clean, main="PSAVERT Cleaned")
+lines(traindata, col='red') #original dataset.
+grid()
+```
+
+
+
+
+Box-Cox
+
+```{r}
+BoxCox.ar(ps_clean,method = c("yule-walker"))
+```
+```{r}
+BoxCox.ar(ps_clean,method = c("ols"))
+```
+```{r}
+lambda <- BoxCox.lambda(ps_clean)
+lambda
+bsavert <- BoxCox(ps_clean,lambda)
+autoplot(bsavert)
+
+lambda1 <- BoxCox.lambda(traindata)
+lambda1
+```
+
+Data prior to 1980 shows an upward trend. Subsequently, there was a decline until approximately 2008. From 2008 to 2021, an increase was observed, followed by another decline.
+
+
+first let's look at the not differenced 
+
+```{r}
+kpss.test(ps_clean,null=c("Level"))
+kpss.test(ps_clean,null=c("Trend"))
+```
+Both of the p-values are smaller than 0.05 so we Reject H0 for both of them.
+That means, series is not stationary and it has deterministic trend. 
+
+
+```{r}
+adfTest(ps_clean, lags=1, type="c") 
+```
+The p-value is smaller than 0.05 so we Reject H0;
+That means, series is not stationary??? 
+```{r}
+adfTest(ps_clean, lags=2, type="ct")
+```
+The p-value is smaller than 0.05 so we Reject H0;
+That means, series is deterministic??? 
+
+
+```{r}
+pp.test(ps_clean)
+```
+The p-value is smaller than 0.05 so we Reject H0;
+That means no unit root??? 
+
+```{r}
+test_hegy <- HEGY.test(ps_clean, itsd=c(1,1,0),regvar=0, selectlags=list(mode="aic", Pmax=12))
+
+test_hegy$stats
+```
+HEGY test implies that;
+series is not stationary(0.01>0.05)
+contains regular unit root
+series is not seasonal
+not contains seasonal root(0.01<0.05)
+
+
+
+#differenced one
+
+```{r}
+nsdiffs(ps_clean)
+ndiffs(ps_clean)
+```
+This also suggests one regular differences and no seasonal differences
+
+Let's take a difference because our dataset is not stationary
+
+```{r}
+kpss.test(d_ps_clean,null=c("Level"))
+```
+The p-value is bigger than 0.05 so we are not Rejecting H0;
+That means, series is stationary.
+
+
+```{r}
+adf.test(d_ps_clean, alternative = c("stationary"),k = trunc((length(psavert)-1)^(1/3)))
+adfTest(d_ps_clean, lags=1, type="c") 
+```
+The p-value is smaller than 0.05 so we are  Rejecting H0;
+That means, series does not contain Unit Root
+
+```{r}
+pp.test(d_ps_clean)
+```
+The p-value is smaller than 0.05 so we are  Rejecting H0;
+That means, series does not contain Unit Root
+
+```{r}
+test_hegy <- HEGY.test(d_ps_clean, itsd=c(1,1,0),regvar=0, selectlags=list(mode="aic", Pmax=12))
+test_hegy$stats
+```
+Since p-values are smaller than 0.05;
+Series does not contain both regular unit root and seasonal unit root
+
+
+```{r}
+ch.test(ps_clean,type = "dummy",sid=c(1:12)) #since we have monthly data, we use sid=c(1:12)
+ch.test(d_ps_clean,type = "dummy",sid=c(1:12)) #since we have monthly data, we use sid=c(1:12)
+
+```
+
+```{r}
+eacf(d_ps_clean)
+```
+ARIMA(4,1,5)
+
+```{r}
+plot(d_ps_clean, main="ACF of Personal Saving Rate")
+acf(d_ps_clean, main="ACF of Personal Saving Rate")
+pacf(d_ps_clean, main="ACF of Personal Saving Rate")
+
+```
+
+
+
+Let's graph acf pacf
+```{r}
+p1<-ggAcf(diff(ps_clean),lag.max = 72)
+p2<-ggPacf(diff(ps_clean),lag.max = 72)
+grid.arrange(p1,p2,ncol=2)
+```
+
+first check significant of the parameters!
+en sonunculara bakıyorum
+raito between estimates and error must (absolute value) be greater than 2 
+if not coef is not significant!
+|estimates/error|>2 if not, not significant
+
+compare signif
+
+```{r}
+auto.arima(ps_clean)
+```
+
+```{r}
+fit2<-Arima(ps_clean,order = c(3, 1, 3), seasonal = c(2, 0, 0))
+fit2
+```
+
+Ar3 and ma 3 are significant, sar2 is not significant
+
+```{r}
+fit1<-Arima(ps_clean,order = c(3, 1, 3), seasonal = c(0, 0, 0))
+fit1
+```
+fit2 is a significant model 
+
+```{r}
+fit3<-Arima(ps_clean,order = c(4, 1, 5), seasonal = c(0, 0, 1))
+fit3
+```
+ar4 is significant, others are not
+
+```{r}
+fit4<-Arima(ps_clean,order = c(4, 1, 3), seasonal = c(0, 0, 2))
+fit4
+```
+only ma3 is signif
+
+```{r}
+fit8<-Arima(ps_clean,order = c(1, 1, 1), seasonal = c(0, 0, 0))
+fit8
+```
+fit8 model is significant
+
+```{r}
+fit5<-Arima(ps_clean,order = c(3, 1, 3), seasonal = c(1, 1, 1))
+fit5
+```
+except sar1, its significant
+
+```{r}
+fit6<-Arima(ps_clean,order = c(1, 1, 1), seasonal = c(2, 1, 3))
+fit6
+```
+fit6 is significant
+
+
+```{r}
+fit7<-Arima(traindata,order = c(3, 1, 3), seasonal = c(0, 1, 1))
+fit7
+```
+fit7 model is significant 
+
+
+```{r}
+r=resid(fit1)
+```
+
+```{r}
+autoplot(r)+geom_line(y=0)+theme_minimal()+ggtitle("Plot of The Residuals")
+```
+It's around zero mean.
+
+
+```{r}
+ggplot(r, aes(sample = r)) +stat_qq()+geom_qq_line()+ggtitle("QQ Plot of the Residuals")+theme_minimal()
+```
+QQ Plot shows that the residuals of the model seems to have light tailed distribution.(indicates S shape slightly.) Besides, there can be some outliers.
+
+
+
+
+
+```{r}
+ggplot(r,aes(x=r))+geom_histogram(bins=20)+geom_density()+ggtitle("Histogram of Residuals")+theme_minimal()
+
+```
+IDK What this means xD
+
+```{r}
+summary(r)
+```
+
+```{r}
+ggplot(r,aes(y=r,x=as.factor(1)))+geom_boxplot()+ggtitle("Box Plot of Residuals")+theme_minimal()
+```
+
+
+
+```{r}
+jarque.bera.test(r)
+```
+
+```{r}
+shapiro.test(r)
+```
+
+```{r}
+g166<-ggAcf(as.vector(r), lag.max = 48)+theme_minimal()+ggtitle("ACF of Squared Residuals")
+g266<-ggPacf(as.vector(r), lag.max = 48)+theme_minimal()+ggtitle("PACF of Squared Residuals") 
+grid.arrange(g166,g266,ncol=2)
+
+```
+If all spikes are in the WN band, the residuals are uncorrelated. In the ACF, almost all spikes are in the WN band. To be sure, let us apply formal tests.
+
+
+```{r}
+m = lm(r ~ 1+zlag(r))
+bgtest(m,order=7) 
+```
+
+
+```{r}
+Box.test(r,lag=7,type = c("Ljung-Box")) # Portmanteau test 
+```
+
+```{r}
+Box.test(r,lag=7,type = c("Box-Pierce"))
+```
+
+```{r}
+rr=r^2
+g1<-ggAcf(as.vector(rr), lag.max = 48)+theme_minimal()+ggtitle("ACF of Squared Residuals")
+g2<-ggPacf(as.vector(rr), lag.max = 48)+theme_minimal()+ggtitle("PACF of Squared Residuals")  # homoscedasticity check
+grid.arrange(g1,g2,ncol=2)
+```
+
+```{r}
+m = lm(r ~ ps_clean+zlag(ps_clean)+zlag(ps_clean,2))
+bptest(m)
+```
+
+```{r}
+m1 = lm(r ~ ps_clean+zlag(ps_clean)+zlag(ps_clean,2)+zlag(ps_clean)^2+zlag(ps_clean,2)^2+zlag(ps_clean)*zlag(ps_clean,2))
+bptest(m1)
+```
+
+
+```{r}
+ArchTest(rr)
+```
+
+no heteroscadasicty
+
+
+
+#forecast
+```{r}
+ses_forecast1=ses(ps_clean,h=length(test),alpha = 0.2,initial = "simple")
+ses_forecast2=ses(ps_clean,h=length(test),alpha = 0.4,initial = "simple")
+ses_forecast3=ses(ps_clean,h=length(test),alpha = 0.6,initial = "simple")
+summary(ses_forecast1) #to see the summary of the forecasts
+
+```
+
+```{r}
+ses_forecast1$mean
+```
+
+```{r}
+autoplot(ses_forecast1,main="SES forecast with alpha=0.2")+theme_minimal()
+```
+
+```{r}
+autoplot(ses_forecast1,main="SES forecast with alpha=0.2") +autolayer(fitted(ses_forecast1), series="Fitted") +
+  ylab("Oil") + xlab("Year")+theme_minimal()
+```
+
+```{r}
+autoplot(ses_forecast1,main="SES Models with different alpha") +autolayer(fitted(ses_forecast1), series="alpha=0.2")+autolayer(fitted(ses_forecast2), series="alpha=0.4") +autolayer(fitted(ses_forecast3), series="alpha=0.6")+theme_minimal() +  coord_cartesian(xlim=c(2004, 2024))
+
+```
+
+
+```{r}
+ts.plot(traindata)
+lines(fitted(ses_forecast1), col="blue", type="o") 
+lines(fitted(ses_forecast2), col="red", type="o")
+lines(fitted(ses_forecast3), col="green", type="o")
+lines(testdata)
+lines(ses_forecast1$mean, col="blue", type="o")
+lines(ses_forecast2$mean, col="red", type="o")
+lines(ses_forecast3$mean, col="green", type="o")
+legend("topright",lty=1, col=c(1,"blue","red","green"), 
+       c("data", expression(alpha == 0.2), expression(alpha == 0.4),
+         expression(alpha == 0.6)),pch=1)
+```
+
+```{r}
+new_ses<-ets(bsavert,model="ZZZ")
+new_ses
+```
+So we will use "(A,N,N)"
+
+```{r}
+autoplot(new_ses)+theme_minimal()
+```
+
+```{r}
+new_ses_f<-forecast(new_ses,h=12)
+autoplot(new_ses_f)+theme_minimal()
+```
+
+```{r}
+accuracy(ses_forecast1) 
+
+```
+
+```{r}
+accuracy(ses_forecast2) 
+```
+
+
+```{r}
+accuracy(ses_forecast3) 
+
+```
+```{r}
+accuracy(new_ses_f)
+
+```
+```{r}
+accuracy(ses_forecast1$mean,testdata)
+```
+
+```{r}
+accuracy(ses_forecast2$mean,testdata)
+```
+
+```{r}
+accuracy(ses_forecast3$mean,testdata)
+```
+```{r}
+accuracy(new_ses_f$mean,testdata)
+```
+
+#double
+
+```{r}
+#install.packages("fpp")
+library(fpp)
+```
+
+```{r}
+hfit1 <- ses(ps_clean,h=12) #h=number of periods for forecasting
+hfit2 <- holt(ps_clean,h=12)
+hfit3 <- holt(ps_clean,exponential=TRUE,h=12)
+hfit4 <- holt(ps_clean,damped=TRUE,h=12)
+```
+
+```{r}
+accuracy(hfit1,testdata)
+```
+
+```{r}
+accuracy(hfit2,testdata)
+```
+
+```{r}
+accuracy(hfit3,testdata)
+```
+
+```{r}
+accuracy(hfit4,testdata)
+```
+```{r}
+autoplot(ps_clean) +
+  autolayer(fitted(fit1), series="SES") + # Use fitted values instead
+  autolayer(fitted(fit2), series="Holt's Winter") +
+  autolayer(fitted(fit3), series="Holt's Winter (Exponential)") +
+  autolayer(fitted(fit4), series="Holt's Winter (Damped)") +
+  autolayer(testdata, series="Actual", color="black") +
+  theme_minimal() +
+  ggtitle("Forecasts from Holt's and SES Methods") +  coord_cartesian(xlim=c(2004, 2024))
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+f<-forecast(fit1,h=12)
+f
+```
+
+
+```{r}
+autoplot(f)+theme_minimal()+ggtitle("Forecast of SARIMA")
+```
+
+
+```{r}
+accuracy(f)
+```
+
+
+```{r}
+f_t<-InvBoxCox(f$mean,lambda)
+accuracy(f_t,testdata)
+```
+
+
+```{r}
+autoplot(f_t,main=c("Time Series Plot of Actual Values vs Forecast"), series="forecast" ) + autolayer(testdata,series = "actual") + theme_bw()
+```
+
+#nnetar
+
+Assumptions;
+Length of the data;
+```{r}
+length(ps_clean)
+```
+it is more than enough
+
+```{r}
+plot(decompose(ps_clean))
+```
+
+
+
+
+```{r}
+nnmodel<-nnetar(ps_clean)
+nnmodel
+```
+```{r}
+rnnn<-residuals(nnmodel)
+m3 = lm(r ~ rnnn+zlag(rnnn)+zlag(rnnn,2))
+bptest(m3)
+```
+
+```{r}
+checkresiduals(nnmodel)
+```
+
+
+```{r}
+autoplot(ps_clean)+autolayer(fitted(nnmodel))+theme_minimal()+ggtitle("Fitted Values of NN Model")
+```
+
+
+```{r}
+nnforecast<-forecast(nnmodel,h=12,PI=TRUE)
+nnforecast
+```
+
+
+```{r}
+autoplot(nnforecast)+theme_minimal()
+```
+
+```{r}
+accuracy(nnforecast,testdata)
+```
+
+```{r}
+#plot(def.fit2,which=3)#henüzçalışmıyor def.fit2 yok
+```
+
+
+```{r}
+#install.packages("prophet")
+library(prophet)
+```
+
+Assumptions;
+Data set is in regular frequency
+The other seasonalities is eliminated automaticly 
+
+```{r}
+prop_res <- df3$y - predict(ps_prophet)$yhat
+plot(prop_res)
+```
+```{r}
+checkresiduals(prop_res)
+```
+
+
+```{r}
+# Generate the sequence of dates
+dsss <- seq(as.Date("1959/01/01"), as.Date("2023/10/01"), by = "month")
+
+# Create a dataframe with the required columns 'ds' and 'y'
+df3 <- data.frame(ds = dsss, y = as.numeric(ps_clean))
+
+# Check the structure of df3
+head(df3)
+
+# Fit the Prophet model
+ps_prophet <- prophet(df3)
+
+```
+
+```{r}
+future<-make_future_dataframe(ps_prophet,periods = 12) #periods 12, since it's a monthly series.
+tail(future)
+```
+
+```{r}
+dim(df3)
+dim(future)
+```
+```{r}
+forecast_prophet <- predict(ps_prophet, future)
+tail(forecast_prophet[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')],12)
+```
+```{r}
+library(ggplot2)
+plot(ps_prophet, forecast_prophet) + theme_minimal()
+```
+```{r}
+prophet_plot_components(ps_prophet, forecast_prophet)
+```
+```{r}
+dyplot.prophet(ps_prophet, forecast_prophet)
+
+```
+
+```{r}
+accuracy(tail(forecast_prophet$yhat,12), testdata)
+```
+```{r}
+accuracy(f, testdata)
+```
+
+```{r}
+ps_prophet_new <- prophet(df3,changepoint.range=0.5,changepoint.prior.scale=0.2,seasonality.prior.scale=0.7)
+
+```
+
+```{r}
+future_new=make_future_dataframe(ps_prophet_new,periods = 12, freq = "month")
+forecast_new <- predict(ps_prophet_new, future_new)
+```
+
+
+```{r}
+accuracy(tail(forecast_new$yhat,12), testdata)
+```
+
+```{r}
+changepoint_prior <- c(0.1, 0.5, 0.9)
+seasonality_prior <- c(0.1, 0.3, 0.5)
+changepoint_range <- c(0.6, 0.8, 0.9)
+
+results <- data.frame(
+  changepoint_prior = numeric(),
+  seasonality_prior = numeric(),
+  changepoint_range = numeric(),
+  RMSE = numeric()
+)
+
+for (cp in changepoint_prior) {
+  for (sp in seasonality_prior) {
+    for (cr in changepoint_range) {
+      mx <- prophet(
+        changepoint.prior.scale = cp,
+        seasonality.prior.scale = sp,
+        changepoint.range = cr,
+        yearly.seasonality = TRUE,
+        weekly.seasonality = FALSE,
+        daily.seasonality = FALSE
+      )
+      mx <- fit.prophet(mx, df3)
+      
+      futurex <- make_future_dataframe(mx, periods = 12, freq = "month")
+      forecastx <- predict(mx, futurex)
+      
+      predicted <- tail(forecastx$yhat, 12)
+      if (length(predicted) == length(testdata)) {
+        acc <- accuracy(predicted, testdata)
+        if (!is.null(acc) && !is.na(acc["Test set", "RMSE"])) {
+          rmse <- acc["Test set", "RMSE"]
+          results <- rbind(results, data.frame(
+            changepoint_prior = cp, 
+            seasonality_prior = sp, 
+            changepoint_range = cr, 
+            RMSE = rmse
+          ))
+        }
+      } else {
+        print("Mismatch in lengths between predicted and test data")
+      }
+    }
+  }
+}
+
+print(results)
+```
+
+
+```{r}
+best_params <- results[which.min(results$RMSE), ]
+best_params
+```
+
+```{r}
+ps_prophet_new2 <- prophet(df3,changepoint.range=0.9,changepoint.prior.scale=0.9,seasonality.prior.scale=0.3)
+future_new2=make_future_dataframe(bsv_prophet_new2,periods = 12, freq = "month")
+
+```
+```{r}
+forecast_new2 <- predict(ps_prophet_new2, future_new2)
+accuracy(tail(forecast_new2$yhat,12),testdata)
+```
+```{r}
+accuracy(tail(forecast_prophet$yhat,12), testdata) #1
+accuracy(tail(forecast_new$yhat,12), testdata)  #2
+accuracy(tail(forecast_new2$yhat,12),testdata) #3
+```
+
+
+#TBATS
+Assumptions;
+There is no seasonal patterns.
+No need to box cox transformatin as well, because variance is stable enough
+
+```{r}
+res_tbats <- residuals(tbatsmodel)
+adf.test(res_tbats)
+```
+
+
+```{r}
+tbatsmodel<-tbats(ps_clean)
+tbatsmodel
+```
+```{r}
+checkresiduals(tbatsmodel)
+```
+
+
+
+
+```{r}
+autoplot(ps_clean,main="TS plot of Train with TBATS Fitted") +autolayer(fitted(tbatsmodel), series="Fitted") +theme_minimal()
+```
+
+
+```{r}
+tbats_forecast<-forecast(tbatsmodel,h=12)
+tbats_forecast
+```
+
+
+```{r}
+autoplot(tbats_forecast)+theme_minimal()
+```
+
+```{r}
+autoplot(tbats_forecast)+autolayer(testdata,series="actual",color="red")+theme_minimal()
+```
+
+
+```{r}
+accuracy(tbats_forecast,testdata)
+```
+
+
+  autolayer(forecast_new$mean,series = "x")
+
+```{r}
+autoplot(f_t,main=c("Time Series Plot of Actual Values Forecast Values"), series="SARIMA" ) + 
+  autolayer(testdata,series = "ACTUAL") +
+  autolayer(ses_forecast3$mean,series = "ETS") +
+  autolayer(tbats_forecast$mean,series = "TBATS") +
+  autolayer(nnforecast$mean,series = "NNETAR") 
+
+```
+
+
+Accuracy cheeck 
+```{r}
+accuracy(tbats_forecast,testdata)#tbat
+```
+```{r}
+accuracy(nnforecast,testdata) #nnetar
+```
+```{r}
+accuracy(ses_forecast3) #ets
+```
+```{r}
+accuracy(f)#sarima
+```
+```{r}
+accuracy(tail(forecast_new$yhat,12), testdata) #prophet
+```
+
+```{r}
+accuracy(tbats_forecast,testdata)#tbat
+accuracy(nnforecast,testdata) #nnetar
+accuracy(ses_forecast3) #ets
+accuracy(f)#sarima
+accuracy(tail(forecast_new$yhat,12), testdata) #prophet
+
+```
+
+
+
+
+```{r}
+autoplot(f, series = "ARIMA(3,1,3)",xlim=c(2000, 2024), main = "Comparison of Forecast Values") + 
+  autolayer(testdata, series = "actual") + 
+    autolayer(tbats_forecast$mean, series = "TBATS") +
+  autolayer(nnforecast$mean, series = "nnforecast") +  
+  geom_vline(xintercept = 2022,            
+             linetype = "dashed",
+             color = "red")+theme(panel.grid.minor = element_blank()) +  
+  labs(x = "Time", y = "Value") +             
+  scale_x_continuous(breaks = seq(2020,2024,by=1))
+```
+
+
+
+```{r}
+plot(nnforecast, xlim=c(2000, 2024), main="Forecast from 2000 to 2024 nnetar") 
+lines(nnmodel$fitted, col="blue", lty=3)
+lines(testdata, col="magenta", lty=3)
+abline(v=c(2024), col="red")
+legend("bottomleft", 
+       legend=c("Actual", "Fitted", "Forecast Origin", "Point Forecast", "Pred. Int"), 
+       col=c("magenta", "blue", "red", "green", "grey"), 
+       lty=c(1, 3))
+```
+
+
+```{r}
+plot(ses_forecast3, xlim=c(2000, 2024), main="Forecast from 2000 to 2024 EST") 
+lines(nnmodel$fitted, col="blue", lty=3)
+lines(testdata, col="magenta", lty=3)
+abline(v=c(2024), col="red")
+legend("bottomleft", 
+       legend=c("Actual", "Fitted", "Forecast Origin", "Point Forecast", "Pred. Int"), 
+       col=c("magenta", "blue", "red", "green", "grey"), 
+       lty=c(1, 3))
+```
+
+
+```{r}
+plot(tbats_forecast, xlim=c(2000, 2024), main="TBATS Forecast from 2000 to 2024") 
+lines(nnmodel$fitted, col="blue", lty=3)
+lines(testdata, col="magenta", lty=3)
+abline(v=c(2024), col="red")
+legend("bottomleft", 
+       legend=c("Actual", "Fitted", "Forecast Origin", "Point Forecast", "Pred. Int"), 
+       col=c("magenta", "blue", "red", "green", "grey"), 
+       lty=c(1, 3))
+```
+
+```{r}
+plot(forecast_prophet, xlim=c(2000, 2024), main="Forecast from 2000 to 2024") 
+lines(nnmodel$fitted, col="blue", lty=3)
+lines(testdata, col="magenta", lty=3)
+abline(v=c(2024), col="red")
+legend("bottomleft", 
+       legend=c("Actual", "Fitted", "Forecast Origin", "Point Forecast", "Pred. Int"), 
+       col=c("magenta", "blue", "red", "green", "grey"), 
+       lty=c(1, 3))
+```
+
+```{r}
+create_sbc_table <- function(data, max_p = 5, max_q = 5, d = 1) {
+  results <- expand.grid(p = 0:max_p, q = 0:max_q)
+  results$SBC <- NA
+  
+  for (i in 1:nrow(results)) {
+    p <- results$p[i]
+    q <- results$q[i]
+    tryCatch({
+      model <- Arima(data, order = c(p, d, q))
+      results$SBC[i] <- BIC(model)
+    }, error = function(e) {
+      results$SBC[i] <- NA
+    })
+  }
+  
+  return(results)
+}
+
+# Generate SBC table for your time series data
+sbc_table <- create_sbc_table(traindata)
+
+min(sbc_table$SBC)
+#21 2 3 355.7597
+
+```
+```{r}
+sbc_table
+```
+value is 2573.461	which responds to ARIMA(2,1,5)
+
+
